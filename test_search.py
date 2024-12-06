@@ -34,7 +34,8 @@ def print_results(results, result_type="workflow"):
                 print(f"  - {workflow['name']} (Order: {workflow['order']})")
                 
         elif result_type == "tool":
-            print(f"Function: {item['function']}")
+            print(item)
+            print(f"tool_code: {item['tool_code']}")
             print("\nUsed by Tasks:")
             for task in item['used_by_tasks']:
                 print(f"  - {task}")
@@ -54,28 +55,28 @@ tools = [
     {
         "name": "data_preprocessor",
         "description": "数据预处理工具，用于清洗和准备数据",
-        "function": "lambda x: {'output': x['input']}"
+        "tool_code": "lambda x: {'output': x['input']}"
     },
     {
         "name": "feature_engineer",
         "description": "特征工程工具，用于特征提取和转换",
-        "function": "lambda x: {'features': x['output']}"
+        "tool_code": "lambda x: {'features': x['output']}"
     },
     {
         "name": "model_trainer",
         "description": "模型训练工具，用于训练机器学习模型",
-        "function": "lambda x: {'model': 'trained_model'}"
+        "tool_code": "lambda x: {'model': 'trained_model'}"
     },
     {
         "name": "data_validator",
         "description": "数据验证工具，用于检查数据质量和完整性",
-        "function": "lambda x: {'is_valid': True}"
+        "tool_code": "lambda x: {'is_valid': True}"
     }
 ]
 
 # 创建工具
-for tool in tools:
-    manager.create_tool(**tool)
+# for tool in tools:
+#     manager.create_tool(**tool)
 
 # 创建一些测试任务
 tasks = [
@@ -101,9 +102,9 @@ tasks = [
     }
 ]
 
-# 创建任务
-for task in tasks:
-    manager.create_task(**task)
+# # 创建任务
+# for task in tasks:
+#     manager.create_task(**task)
 
 # 创建一些测试工作流
 workflows = [
@@ -127,8 +128,8 @@ workflows = [
 ]
 
 # 创建工作流
-for workflow in workflows:
-    manager.create_workflow(**workflow)
+# for workflow in workflows:
+#     manager.create_workflow(**workflow)
 
 # print("\n=== 测试工作流搜索 ===")
 # print("\n1. 搜索包含'数据分析'的工作流:")
@@ -158,4 +159,4 @@ print_results(results, result_type="tool")
 # print_results(results, result_type="tool")
 
 # 清理连接
-manager.close()
+# manager.close()

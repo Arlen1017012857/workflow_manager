@@ -17,13 +17,15 @@ async def test_workflow_execution():
         manager.create_tool(
             name="add_inline",
             description="Add two numbers using inline code",
-            tool_code="lambda context: context.get('a', 0) + context.get('b', 0)"  # Return raw value
+            tool_code="""def add_inline(a, b):
+    return a + b"""
         )
         
         manager.create_tool(
             name="multiply_inline",
             description="Multiply result by 2 using inline code",
-            tool_code="lambda context: context.get('add_numbers_inline_result', 0) * 2"  # Return raw value
+            tool_code="""def multiply_inline(add_inline_result):
+    return add_inline_result * 2"""
         )
         
         # Create tools using import execution from Tools directory

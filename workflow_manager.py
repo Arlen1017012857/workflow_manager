@@ -91,7 +91,7 @@ class WorkflowManager:
             RETURN 
                 node.name as tool_name,
                 node.description as tool_description,
-                node.tool_code as tool_function,
+                toString(node.tool_code) as tool_code,
                 score as similarity_score,
                 used_by_tasks
             """,
@@ -441,8 +441,10 @@ class WorkflowManager:
                 tool_desc = content.split("tool_description='")[1].split("'")[0]
                 similarity = float(content.split("similarity_score=")[1].split(" ")[0])
                 
-                # 提取函数字符串，这里需要特殊处理因为它不是被引号包围的
-                function_start = content.split("tool_function=")[1].split(" used_by_tasks=")[0].strip()
+                # 提取tool_code - 处理双引号包裹的情况
+                tool_code_start = content.split('tool_code="')[1]
+                tool_code_end = tool_code_start.split('" similarity_score')[0]
+                tool_code = tool_code_end.replace('\\"', '"')  # 处理可能的转义引号
                 
                 # 提取used_by_tasks
                 used_by_tasks_str = content.split("used_by_tasks=")[1].strip(">").strip()
@@ -452,7 +454,7 @@ class WorkflowManager:
                     "name": tool_name,
                     "description": tool_desc,
                     "similarity_score": similarity,
-                    "function": function_start,
+                    "tool_code": tool_code,
                     "used_by_tasks": used_by_tasks
                 }
             
@@ -463,6 +465,7 @@ class WorkflowManager:
     async def execute_task_by_code(self, task: Dict, tool: Dict, context_variables: Dict[str, Any]) -> Dict[str, Any]:
         """使用代码执行方式执行任务"""
         try:
+            print(f"Executing task: {task['name']}")
             if not tool.get("tool_code"):
                 raise ValueError(f"Tool {tool['name']} does not have tool_code")
             
@@ -473,15 +476,21 @@ class WorkflowManager:
             
             # 构建执行代码
             code = f"""
-# 获取上下文变量
+# 导入装饰器
+import sys
+sys.path.append('.')
+from Tools.code_executor import with_context
+
+# 定义上下文
 context = {context_variables}
 
-# 执行工具代码
-tool_code = {tool['tool_code']}
-result = tool_code(context)
+{tool['tool_code']}
+
+# 装饰函数
+{tool['name']} = with_context({tool['name']})
 
 # 返回结果
-result
+{tool['name']}(context)
 """
             
             # 执行代码
@@ -601,7 +610,7 @@ result
                     result = await self.execute_task_by_code(task, tool, context_variables)
                 else:
                     result = await self.execute_task_by_import(task, tool, context_variables)
-                
+                print(result)
                 # 检查执行结果
                 if not result["success"]:
                     return result
@@ -619,5 +628,7 @@ result
 
     async def close(self):
         """关闭数据库连接和清理资源"""
-        self.driver.close()
-        await self.code_executor.cleanup()
+        if hasattr(self, 'driver'):
+            self.driver.close()
+        if hasattr(self, 'code_executor'):
+            await self.code_executor.cleanup()

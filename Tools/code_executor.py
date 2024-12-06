@@ -19,6 +19,40 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.progress import Progress
 
+from functools import wraps
+import inspect
+
+def with_context(func):
+    """
+    Decorator that automatically handles context management for function parameters and return values.
+    It extracts parameters from context and puts the return value back into context with function name as key.
+    """
+    @wraps(func)
+    def wrapper(context):
+        # Get the function's parameter names
+        params = inspect.signature(func).parameters
+        
+        # Extract parameters from context
+        kwargs = {}
+        for param_name in params:
+            kwargs[param_name] = context.get(param_name)
+        
+        # Call the original function
+        result = func(**kwargs)
+        
+        # If the function returns None, return empty dict
+        if result is None:
+            return {}
+            
+        # If the function returns a dict, use it as is
+        if isinstance(result, dict):
+            return result
+            
+        # Otherwise, store the result with function name as key
+        return {f'{func.__name__}_result': result}
+    
+    return wrapper
+    
 class CodeExecutor:
     _instance = None
     
