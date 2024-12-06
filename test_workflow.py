@@ -17,34 +17,31 @@ async def test_workflow_execution():
         manager.create_tool(
             name="add_inline",
             description="Add two numbers using inline code",
-            function="lambda context: {'result': context.get('a', 0) + context.get('b', 0)}"
+            tool_code="lambda context: context.get('a', 0) + context.get('b', 0)"  # Return raw value
         )
         
         manager.create_tool(
             name="multiply_inline",
             description="Multiply result by 2 using inline code",
-            function="lambda context: {'result': context.get('result', 0) * 2}"
+            tool_code="lambda context: context.get('add_numbers_inline_result', 0) * 2"  # Return raw value
         )
         
         # Create tools using import execution from Tools directory
         manager.create_tool(
-            name="add_imported",
+            name="add_numbers",
             description="Add two numbers using imported function",
-            function="add_numbers",
             import_from="Tools.math_operations"
         )
         
         manager.create_tool(
-            name="multiply_imported",
+            name="multiply_by_two",
             description="Multiply result by 2 using imported function",
-            function="multiply_by_two",
             import_from="Tools.math_operations"
         )
         
         manager.create_tool(
-            name="format_imported",
+            name="format_result",
             description="Format result using imported function",
-            function="format_result",
             import_from="Tools.math_operations"
         )
         
@@ -64,19 +61,19 @@ async def test_workflow_execution():
         manager.create_task(
             name="add_numbers_imported",
             description="Add two numbers using imported function",
-            tool_name="add_imported"
+            tool_name="add_numbers"
         )
         
         manager.create_task(
             name="multiply_result_imported",
             description="Multiply the result using imported function",
-            tool_name="multiply_imported"
+            tool_name="multiply_by_two"
         )
         
         manager.create_task(
             name="format_result_imported",
-            description="Format the result using imported function",
-            tool_name="format_imported"
+            description="Format result using imported function",
+            tool_name="format_result"
         )
         
         # Create workflow with inline code execution
@@ -100,23 +97,18 @@ async def test_workflow_execution():
             ]
         )
         
-        # Test inline code execution
-        print("\nTesting inline code execution workflow:")
-        result = await manager.execute_workflow(
-            workflow_name="inline_workflow",
-            context_variables={"a": 5, "b": 3}
-        )
-        print(f"Inline execution result: {result}")
+        # Execute workflows
+        context = {'a': 5, 'b': 3}
+        print("\nExecuting inline workflow...")
+        result = await manager.execute_workflow("inline_workflow", context)
+        print(f"Inline workflow result: {result}")
         
-        # Test import execution
-        print("\nTesting import execution workflow:")
-        result = await manager.execute_workflow(
-            workflow_name="import_workflow",
-            context_variables={"a": 10, "b": 7}
-        )
-        print(f"Import execution result: {result}")
+        print("\nExecuting import workflow...")
+        result = await manager.execute_workflow("import_workflow", context)
+        print(f"Import workflow result: {result}")
         
     finally:
+        # Clean up
         await manager.close()
 
 if __name__ == "__main__":
