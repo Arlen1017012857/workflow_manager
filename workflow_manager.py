@@ -358,15 +358,91 @@ class WorkflowManager:
 
     def search_workflows(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工作流"""
-        return self.workflow_retriever.search(query_text=query, top_k=top_k)
+        results = self.workflow_retriever.search(query_text=query, top_k=top_k)
+        return self.parse_search_results(results, "workflow")
 
     def search_tasks(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索任务"""
-        return self.task_retriever.search(query_text=query, top_k=top_k)
+        results = self.task_retriever.search(query_text=query, top_k=top_k)
+        return self.parse_search_results(results, "task")
 
     def search_tools(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工具"""
-        return self.tool_retriever.search(query_text=query, top_k=top_k)
+        results = self.tool_retriever.search(query_text=query, top_k=top_k)
+        return self.parse_search_results(results, "tool")
+
+    def parse_search_results(self, results, result_type: str = "workflow") -> List[Dict]:
+        """解析搜索结果为字典格式
+        
+        Args:
+            results: RetrieverResult对象
+            result_type: 结果类型，可选值: "workflow", "task", "tool"
+            
+        Returns:
+            list: 包含搜索结果信息的字典列表
+        """
+        parsed_results = []
+        
+        for item in results.items:
+            content = item.content
+            result_dict = {}
+            
+            if result_type == "workflow":
+                # 解析工作流搜索结果
+                workflow_name = content.split("workflow_name='")[1].split("'")[0]
+                workflow_desc = content.split("workflow_description='")[1].split("'")[0]
+                similarity = float(content.split("similarity_score=")[1].split(" ")[0])
+                tasks_str = content.split("tasks=")[1].strip(">").strip()
+                tasks = eval(tasks_str)
+                
+                result_dict = {
+                    "name": workflow_name,
+                    "description": workflow_desc,
+                    "similarity_score": similarity,
+                    "tasks": tasks
+                }
+                
+            elif result_type == "task":
+                # 解析任务搜索结果
+                task_name = content.split("task_name='")[1].split("'")[0]
+                task_desc = content.split("task_description='")[1].split("'")[0]
+                similarity = float(content.split("similarity_score=")[1].split(" ")[0])
+                tool_name = content.split("tool_name='")[1].split("'")[0]
+                workflows_str = content.split("workflows=")[1].strip(">").strip()
+                workflows = eval(workflows_str)
+                
+                result_dict = {
+                    "name": task_name,
+                    "description": task_desc,
+                    "similarity_score": similarity,
+                    "tool": tool_name,
+                    "workflows": workflows
+                }
+                
+            elif result_type == "tool":
+                # 解析工具搜索结果
+                tool_name = content.split("tool_name='")[1].split("'")[0]
+                tool_desc = content.split("tool_description='")[1].split("'")[0]
+                similarity = float(content.split("similarity_score=")[1].split(" ")[0])
+                
+                # 提取函数字符串，这里需要特殊处理因为它不是被引号包围的
+                function_start = content.split("tool_function=")[1].split(" used_by_tasks=")[0].strip()
+                
+                # 提取used_by_tasks
+                used_by_tasks_str = content.split("used_by_tasks=")[1].strip(">").strip()
+                used_by_tasks = eval(used_by_tasks_str)
+                
+                result_dict = {
+                    "name": tool_name,
+                    "description": tool_desc,
+                    "similarity_score": similarity,
+                    "function": function_start,
+                    "used_by_tasks": used_by_tasks
+                }
+            
+            parsed_results.append(result_dict)
+        
+        return parsed_results
 
     def execute_workflow(self, workflow_name: str, context_variables: Dict[str, Any] = None) -> Dict[str, Any]:
         """执行工作流"""

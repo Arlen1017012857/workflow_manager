@@ -6,49 +6,41 @@ import os
 # 加载环境变量
 load_dotenv()
 
-def print_results(results):
-    """格式化打印搜索结果"""
-    for item in results.items:
-        # 解析Record字符串为字典
-        record_str = item.content.replace("<Record ", "").replace(">", "")
-        parts = [p.split('=') for p in record_str.split(' ') if '=' in p]
-        record = {}
-        for key, value in parts:
-            try:
-                record[key] = eval(value)
-            except:
-                record[key] = value.strip("'")
+def print_results(results, result_type="workflow"):
+    """格式化打印搜索结果
+    
+    Args:
+        results: 解析后的搜索结果列表
+        result_type: 结果类型，可选值: "workflow", "task", "tool"
+    """
+    print("\n=== Search Results ===")
+    
+    for item in results:
+        print(f"\nName: {item['name']}")
+        print(f"Description: {item['description']}")
+        print(f"Similarity Score: {item['similarity_score']:.2f}")
         
-        # 打印结果
-        print("\n相似度：{:.2f}".format(record['similarity_score']))
-        
-        if 'workflow_name' in record:  # 工作流搜索结果
-            print(f"工作流：{record['workflow_name']}")
-            print(f"描述：{record['workflow_description']}")
-            print("\n包含任务：")
-            for task in record['tasks']:
-                print(f"- {task['name']} (顺序: {task['order']}, 工具: {task['tool']})")
-                print(f"  描述: {task.get('description', '无描述')}")
-        
-        elif 'task_name' in record:  # 任务搜索结果
-            print(f"任务：{record['task_name']}")
-            print(f"描述：{record['task_description']}")
-            print(f"使用工具：{record['tool_name']}")
-            if record['workflows']:
-                print("\n所属工作流：")
-                for wf in record['workflows']:
-                    print(f"- {wf['name']} (顺序: {wf['order']})")
-        
-        elif 'tool_name' in record:  # 工具搜索结果
-            print(f"工具：{record['tool_name']}")
-            print(f"描述：{record['tool_description']}")
-            print(f"函数：{record['tool_function']}")
-            if record['used_by_tasks']:
-                print("\n被以下任务使用：")
-                for task in record['used_by_tasks']:
-                    print(f"- {task}")
-        
-        print("\n" + "-"*50)
+        if result_type == "workflow":
+            print("\nTasks:")
+            for task in item['tasks']:
+                print(f"  {task['order']}. {task['name']}")
+                print(f"     Tool: {task['tool']}")
+                print(f"     Description: {task['description']}")
+                
+        elif result_type == "task":
+            print(f"Tool: {item['tool']}")
+            print("\nUsed in Workflows:")
+            for workflow in item['workflows']:
+                print(f"  - {workflow['name']} (Order: {workflow['order']})")
+                
+        elif result_type == "tool":
+            print(f"Function: {item['function']}")
+            print("\nUsed by Tasks:")
+            for task in item['used_by_tasks']:
+                print(f"  - {task}")
+                
+        print("-" * 50)
+
 
 # 初始化工作流管理器
 manager = WorkflowManager(
@@ -138,32 +130,32 @@ workflows = [
 for workflow in workflows:
     manager.create_workflow(**workflow)
 
-print("\n=== 测试工作流搜索 ===")
-print("\n1. 搜索包含'数据分析'的工作流:")
-results = manager.search_workflows("数据分析")
-print_results(results)
+# print("\n=== 测试工作流搜索 ===")
+# print("\n1. 搜索包含'数据分析'的工作流:")
+# results = manager.search_workflows("数据分析")
+# print_results(results, result_type="workflow")
 
-print("\n2. 搜索包含'质量检查'的工作流:")
-results = manager.search_workflows("质量检查")
-print_results(results)
+# print("\n2. 搜索包含'质量检查'的工作流:")
+# results = manager.search_workflows("质量检查")
+# print_results(results, result_type="workflow")
 
 print("\n=== 测试任务搜索 ===")
 print("\n1. 搜索包含'预处理'的任务:")
 results = manager.search_tasks("预处理")
-print_results(results)
+print_results(results, result_type="task")
 
-print("\n2. 搜索包含'特征'的任务:")
-results = manager.search_tasks("特征")
-print_results(results)
+# print("\n2. 搜索包含'特征'的任务:")
+# results = manager.search_tasks("特征")
+# print_results(results, result_type="task")
 
 print("\n=== 测试工具搜索 ===")
 print("\n1. 搜索包含'数据'的工具:")
 results = manager.search_tools("数据")
-print_results(results)
+print_results(results, result_type="tool")
 
-print("\n2. 搜索包含'模型'的工具:")
-results = manager.search_tools("模型")
-print_results(results)
+# print("\n2. 搜索包含'模型'的工具:")
+# results = manager.search_tools("模型")
+# print_results(results, result_type="tool")
 
 # 清理连接
 manager.close()
