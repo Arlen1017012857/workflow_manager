@@ -60,8 +60,31 @@ class WorkflowManager:
             """)
 
     def create_task(self, name: str, description: str, tool_name: str) -> Dict:
-        """创建新任务并关联工具"""
+        """创建新任务并关联工具，如果任务已存在则返回现有任务"""
         with self.driver.session(database=self.database) as session:
+            # 首先检查任务是否已存在
+            existing_task = session.run("""
+                MATCH (task:Task {name: $name})-[:USES]->(tool:Tool)
+                RETURN task, tool
+                """,
+                name=name
+            ).single()
+            
+            if existing_task:
+                return existing_task["task"]
+            
+            # 检查工具是否存在
+            tool = session.run("""
+                MATCH (tool:Tool {name: $tool_name})
+                RETURN tool
+                """,
+                tool_name=tool_name
+            ).single()
+            
+            if not tool:
+                raise ValueError(f"Tool '{tool_name}' does not exist")
+            
+            # 创建新任务
             embedding = self.embedder.embed_query(f"{name} {description}")
             result = session.run("""
                 MATCH (tool:Tool {name: $tool_name})
@@ -123,8 +146,32 @@ class WorkflowManager:
             return result.single()["deleted"] > 0
 
     def create_workflow(self, name: str, description: str, tasks: List[Dict[str, Union[str, int]]]) -> Dict:
-        """创建工作流并添加任务"""
+        """创建工作流并添加任务，如果工作流已存在则返回现有工作流"""
         with self.driver.session(database=self.database) as session:
+            # 检查工作流是否已存在
+            existing_workflow = session.run("""
+                MATCH (w:Workflow {name: $name})
+                RETURN w
+                """,
+                name=name
+            ).single()
+            
+            if existing_workflow:
+                return existing_workflow["w"]
+            
+            # 检查所有任务是否存在
+            for task in tasks:
+                task_exists = session.run("""
+                    MATCH (t:Task {name: $task_name})
+                    RETURN t
+                    """,
+                    task_name=task["name"]
+                ).single()
+                
+                if not task_exists:
+                    raise ValueError(f"Task '{task['name']}' does not exist")
+            
+            # 创建新工作流
             embedding = self.embedder.embed_query(f"{name} {description}")
             result = session.run("""
                 CREATE (w:Workflow {
@@ -190,6 +237,38 @@ class WorkflowManager:
                 task_name=task_name
             )
             return result.single()["removed"] > 0
+
+    def create_tool(self, name: str, description: str, function: str) -> Dict:
+        """创建新工具，如果工具已存在则返回现有工具"""
+        with self.driver.session(database=self.database) as session:
+            # 检查工具是否已存在
+            existing_tool = session.run("""
+                MATCH (tool:Tool {name: $name})
+                RETURN tool
+                """,
+                name=name
+            ).single()
+            
+            if existing_tool:
+                return existing_tool["tool"]
+            
+            # 创建新工具
+            embedding = self.embedder.embed_query(f"{name} {description}")
+            result = session.run("""
+                CREATE (tool:Tool {
+                    name: $name,
+                    description: $description,
+                    function: $function,
+                    embedding: $embedding
+                })
+                RETURN tool
+                """,
+                name=name,
+                description=description,
+                function=function,
+                embedding=embedding
+            )
+            return result.single()["tool"]
 
     def search_workflows(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工作流"""
@@ -316,6 +395,13 @@ if __name__ == "__main__":
         name="数据预处理",
         description="清洗和准备数据",
         tool_name="data_preprocessor"
+    )
+
+    # 创建工具
+    tool = manager.create_tool(
+        name="data_preprocessor",
+        description="数据预处理工具",
+        function="lambda x: {'output': x['input']}"
     )
 
     # 创建工作流
