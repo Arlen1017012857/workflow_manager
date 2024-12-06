@@ -6,11 +6,11 @@ def add_numbers(a, b):
     return a + b
 
 @with_context
-def multiply_by_two(add_numbers_result):
+def multiply_by_two(add_numbers):
     """Multiply the result by 2"""
-    return add_numbers_result * 2
+    return add_numbers * 2
 
 @with_context
-def format_result(multiply_by_two_result):
+def format_result(multiply_by_two):
     """Format the result as a string"""
-    return {'formatted': f"The final result is: {multiply_by_two_result}"}
+    return {'formatted': f"The final result is: {multiply_by_two}"}

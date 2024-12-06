@@ -143,8 +143,99 @@ class WorkflowManager:
                 FOR (t:Tool) ON EACH [t.name, t.description]
             """)
 
+    def create_tool(self, name: str, description: str, tool_code: str = None, import_from: Optional[str] = None):
+        """创建新工具，如果工具已存在则返回已存在的工具
+        
+        Args:
+            name: 工具名称
+            description: 工具描述
+            tool_code: 工具代码
+            import_from: 函数导入路径，例如 'module.submodule'
+        """
+        with self.driver.session(database=self.database) as session:
+            # 检查工具是否已存在
+            existing_tool = session.run("""
+                MATCH (tool:Tool {name: $name})
+                RETURN tool
+                LIMIT 1
+                """,
+                name=name
+            ).single()
+            
+            if existing_tool:
+                return existing_tool["tool"]
+            
+            # 创建新的嵌入向量
+            embedding = self.embedder.embed_query(f"{name} {description}")
+            
+            # 创建新工具
+            result = session.run("""
+                CREATE (tool:Tool {
+                    name: $name,
+                    description: $description,
+                    tool_code: $tool_code,
+                    import_from: $import_from,
+                    embedding: $embedding
+                })
+                RETURN tool
+                LIMIT 1
+                """,
+                name=name,
+                description=description,
+                tool_code=tool_code,
+                import_from=import_from,
+                embedding=embedding
+            )
+            
+            record = result.single()
+            return record["tool"] if record else None
+
+    def update_tool(self, name: str, description: str = None, tool_code: str = None, import_from: Optional[str] = None):
+        """更新现有工具的属性
+        
+        Args:
+            name: 工具名称
+            description: 工具描述
+            tool_code: 工具代码
+            import_from: 函数导入路径，例如 'module.submodule'
+        """
+        with self.driver.session(database=self.database) as session:
+            # 检查工具是否存在
+            exists = session.run("""
+                MATCH (tool:Tool {name: $name})
+                RETURN count(tool) > 0 as exists
+                """,
+                name=name
+            ).single()["exists"]
+            
+            if not exists:
+                raise ValueError(f"Tool '{name}' does not exist. Use create_tool to create new tools.")
+            
+            # 创建新的嵌入向量
+            embedding = self.embedder.embed_query(f"{name} {description if description else ''}")
+            
+            # 更新工具属性
+            result = session.run("""
+                MATCH (tool:Tool {name: $name})
+                SET tool.embedding = $embedding
+                SET tool.description = CASE WHEN $description IS NULL THEN tool.description ELSE $description END
+                SET tool.tool_code = CASE WHEN $tool_code IS NULL THEN tool.tool_code ELSE $tool_code END
+                SET tool.import_from = CASE WHEN $import_from IS NULL THEN tool.import_from ELSE $import_from END
+                RETURN tool
+                LIMIT 1
+                """,
+                name=name,
+                description=description,
+                tool_code=tool_code,
+                import_from=import_from,
+                embedding=embedding
+            )
+            
+            record = result.single()
+            return record["tool"] if record else None
+
     def create_task(self, name: str, description: str, tool_name: str) -> Dict:
-        """创建新任务并关联工具，如果任务已存在则更新并返回
+        """创建新任务并关联工具，如果任务已存在则返回已存在的任务
         
         Args:
             name: 任务名称
@@ -152,6 +243,18 @@ class WorkflowManager:
             tool_name: 工具名称
         """
         with self.driver.session(database=self.database) as session:
+            # 检查任务是否已存在
+            existing_task = session.run("""
+                MATCH (task:Task {name: $name})-[:USES]->(tool:Tool)
+                RETURN task, tool
+                LIMIT 1
+                """,
+                name=name
+            ).single()
+            
+            if existing_task:
+                return existing_task["task"]
+            
             # 检查工具是否存在
             tool = session.run("""
                 MATCH (tool:Tool {name: $tool_name})
@@ -167,18 +270,76 @@ class WorkflowManager:
             # 创建新的嵌入向量
             embedding = self.embedder.embed_query(f"{name} {description}")
             
-            # 使用MERGE来处理任务节点，防止重复创建
+            # 创建新任务并关联工具
             result = session.run("""
                 MATCH (tool:Tool {name: $tool_name})
-                MERGE (task:Task {name: $name})
-                ON CREATE SET 
-                    task.description = $description,
-                    task.embedding = $embedding
-                ON MATCH SET 
-                    task.description = $description,
-                    task.embedding = $embedding
+                CREATE (task:Task {
+                    name: $name,
+                    description: $description,
+                    embedding: $embedding
+                })
+                CREATE (task)-[:USES]->(tool)
+                RETURN task
+                LIMIT 1
+                """,
+                name=name,
+                description=description,
+                tool_name=tool_name,
+                embedding=embedding
+            )
+            
+            record = result.single()
+            return record["task"] if record else None
+
+    def update_task(self, name: str, description: str = None, tool_name: str = None) -> Dict:
+        """更新现有任务的属性和关联工具
+        
+        Args:
+            name: 任务名称
+            description: 任务描述
+            tool_name: 工具名称
+        """
+        with self.driver.session(database=self.database) as session:
+            # 检查任务是否存在
+            exists = session.run("""
+                MATCH (task:Task {name: $name})
+                RETURN count(task) > 0 as exists
+                """,
+                name=name
+            ).single()["exists"]
+            
+            if not exists:
+                raise ValueError(f"Task '{name}' does not exist. Use create_task to create new tasks.")
+            
+            # 如果指定了新工具，检查工具是否存在
+            if tool_name:
+                tool = session.run("""
+                    MATCH (tool:Tool {name: $tool_name})
+                    RETURN tool
+                    LIMIT 1
+                    """,
+                    tool_name=tool_name
+                ).single()
                 
-                // 使用MERGE确保关系不会重复创建
+                if not tool:
+                    raise ValueError(f"Tool '{tool_name}' does not exist")
+            
+            # 创建新的嵌入向量
+            embedding = self.embedder.embed_query(f"{name} {description if description else ''}")
+            
+            # 更新任务属性和关联工具
+            result = session.run("""
+                MATCH (task:Task {name: $name})
+                SET task.embedding = $embedding
+                SET task.description = CASE WHEN $description IS NULL THEN task.description ELSE $description END
+                
+                WITH task
+                OPTIONAL MATCH (task)-[r:USES]->(:Tool)
+                WHERE $tool_name IS NOT NULL
+                DELETE r
+                
+                WITH task
+                MATCH (tool:Tool {name: CASE WHEN $tool_name IS NULL THEN task.tool_name ELSE $tool_name END})
                 MERGE (task)-[:USES]->(tool)
                 
                 RETURN task
@@ -192,6 +353,139 @@ class WorkflowManager:
             
             record = result.single()
             return record["task"] if record else None
+
+    def create_workflow(self, name: str, description: str, tasks: List[Dict[str, Union[str, int]]]) -> Dict:
+        """创建新工作流并添加任务，如果工作流已存在则返回已存在的工作流
+        
+        Args:
+            name: 工作流名称
+            description: 工作流描述
+            tasks: 任务列表，每个任务包含 name 和 order
+        """
+        with self.driver.session(database=self.database) as session:
+            # 检查工作流是否已存在
+            existing_workflow = session.run("""
+                MATCH (w:Workflow {name: $name})
+                RETURN w
+                LIMIT 1
+                """,
+                name=name
+            ).single()
+            
+            if existing_workflow:
+                return existing_workflow["w"]
+            
+            # 检查所有任务是否存在
+            missing_tasks = []
+            for task in tasks:
+                task_exists = session.run("""
+                    MATCH (t:Task {name: $task_name})
+                    RETURN count(t) > 0 as exists
+                    """,
+                    task_name=task["name"]
+                ).single()["exists"]
+                
+                if not task_exists:
+                    missing_tasks.append(task["name"])
+            
+            if missing_tasks:
+                raise ValueError(f"Cannot create workflow '{name}'. The following tasks do not exist: {', '.join(missing_tasks)}")
+            
+            # 创建新的嵌入向量
+            embedding = self.embedder.embed_query(f"{name} {description}")
+            
+            # 创建新工作流并添加任务
+            result = session.run("""
+                CREATE (w:Workflow {
+                    name: $name,
+                    description: $description,
+                    embedding: $embedding
+                })
+                
+                WITH w
+                UNWIND $tasks as task
+                MATCH (t:Task {name: task.name})
+                CREATE (w)-[r:CONTAINS {order: task.order}]->(t)
+                
+                RETURN w
+                LIMIT 1
+                """,
+                name=name,
+                description=description,
+                embedding=embedding,
+                tasks=tasks
+            )
+            
+            record = result.single()
+            return record["w"] if record else None
+
+    def update_workflow(self, name: str, description: str = None, tasks: List[Dict[str, Union[str, int]]] = None) -> Dict:
+        """更新现有工作流的属性和任务
+        
+        Args:
+            name: 工作流名称
+            description: 工作流描述
+            tasks: 任务列表，每个任务包含 name 和 order
+        """
+        with self.driver.session(database=self.database) as session:
+            # 检查工作流是否存在
+            exists = session.run("""
+                MATCH (w:Workflow {name: $name})
+                RETURN count(w) > 0 as exists
+                """,
+                name=name
+            ).single()["exists"]
+            
+            if not exists:
+                raise ValueError(f"Workflow '{name}' does not exist. Use create_workflow to create new workflows.")
+            
+            # 如果指定了新任务列表，检查所有任务是否存在
+            if tasks:
+                missing_tasks = []
+                for task in tasks:
+                    task_exists = session.run("""
+                        MATCH (t:Task {name: $task_name})
+                        RETURN count(t) > 0 as exists
+                        """,
+                        task_name=task["name"]
+                    ).single()["exists"]
+                    
+                    if not task_exists:
+                        missing_tasks.append(task["name"])
+                
+                if missing_tasks:
+                    raise ValueError(f"Cannot update workflow '{name}'. The following tasks do not exist: {', '.join(missing_tasks)}")
+            
+            # 创建新的嵌入向量
+            embedding = self.embedder.embed_query(f"{name} {description if description else ''}")
+            
+            # 更新工作流属性
+            result = session.run("""
+                MATCH (w:Workflow {name: $name})
+                SET w.embedding = $embedding
+                SET w.description = CASE WHEN $description IS NULL THEN w.description ELSE $description END
+                
+                WITH w
+                OPTIONAL MATCH (w)-[r:CONTAINS]->(:Task)
+                WHERE $tasks IS NOT NULL
+                DELETE r
+                
+                WITH w
+                UNWIND CASE WHEN $tasks IS NULL THEN [] ELSE $tasks END as task
+                MATCH (t:Task {name: task.name})
+                CREATE (w)-[r:CONTAINS {order: task.order}]->(t)
+                
+                RETURN w
+                LIMIT 1
+                """,
+                name=name,
+                description=description,
+                embedding=embedding,
+                tasks=tasks
+            )
+            
+            record = result.single()
+            return record["w"] if record else None
 
     def get_task(self, task_name: str) -> Dict:
         """获取任务详情"""
@@ -235,150 +529,6 @@ class WorkflowManager:
                 task_name=task_name
             )
             return result.single()["deleted"] > 0
-
-    def create_workflow(self, name: str, description: str, tasks: List[Dict[str, Union[str, int]]]) -> Dict:
-        """创建工作流并添加任务，如果工作流已存在则更新并返回
-        
-        Args:
-            name: 工作流名称
-            description: 工作流描述
-            tasks: 任务列表，每个任务包含 name 和 order
-        """
-        with self.driver.session(database=self.database) as session:
-            # 检查所有任务是否存在
-            missing_tasks = []
-            for task in tasks:
-                task_exists = session.run("""
-                    MATCH (t:Task {name: $task_name})
-                    RETURN count(t) > 0 as exists
-                    """,
-                    task_name=task["name"]
-                ).single()["exists"]
-                
-                if not task_exists:
-                    missing_tasks.append(task["name"])
-            
-            if missing_tasks:
-                raise ValueError(f"Cannot create workflow '{name}'. The following tasks do not exist: {', '.join(missing_tasks)}")
-            
-            # 创建新的嵌入向量
-            embedding = self.embedder.embed_query(f"{name} {description}")
-            
-            # 使用MERGE和事务来确保原子性操作
-            result = session.run("""
-                MERGE (w:Workflow {name: $name})
-                ON CREATE SET 
-                    w.description = $description,
-                    w.embedding = $embedding
-                ON MATCH SET 
-                    w.description = $description,
-                    w.embedding = $embedding
-                
-                // 删除现有的任务关系
-                WITH w
-                OPTIONAL MATCH (w)-[r:CONTAINS]->(:Task)
-                DELETE r
-                
-                // 创建新的任务关系
-                WITH w
-                UNWIND $tasks as task
-                MATCH (t:Task {name: task.name})
-                MERGE (w)-[r:CONTAINS {order: task.order}]->(t)
-                
-                // 返回工作流
-                WITH w
-                RETURN w
-                LIMIT 1
-                """,
-                name=name,
-                description=description,
-                embedding=embedding,
-                tasks=tasks
-            )
-            
-            record = result.single()
-            return record["w"] if record else None
-
-    def add_task_to_workflow(self, workflow_name: str, task_name: str, order: int) -> bool:
-        """将任务添加到工作流"""
-        with self.driver.session(database=self.database) as session:
-            # 先更新现有任务的顺序
-            session.run("""
-                MATCH (w:Workflow {name: $workflow_name})-[r:CONTAINS]->(t:Task)
-                WHERE r.order >= $order
-                SET r.order = r.order + 1
-                """,
-                workflow_name=workflow_name,
-                order=order
-            )
-            
-            # 添加新任务
-            result = session.run("""
-                MATCH (w:Workflow {name: $workflow_name}), (t:Task {name: $task_name})
-                CREATE (w)-[r:CONTAINS {order: $order}]->(t)
-                RETURN count(r) as created
-                """,
-                workflow_name=workflow_name,
-                task_name=task_name,
-                order=order
-            )
-            return result.single()["created"] > 0
-
-    def remove_task_from_workflow(self, workflow_name: str, task_name: str) -> bool:
-        """从工作流中移除任务"""
-        with self.driver.session(database=self.database) as session:
-            result = session.run("""
-                MATCH (w:Workflow {name: $workflow_name})-[r:CONTAINS]->(t:Task {name: $task_name})
-                DELETE r
-                WITH w, r.order as removed_order
-                MATCH (w)-[r2:CONTAINS]->(t2:Task)
-                WHERE r2.order > removed_order
-                SET r2.order = r2.order - 1
-                RETURN count(r) as removed
-                """,
-                workflow_name=workflow_name,
-                task_name=task_name
-            )
-            return result.single()["removed"] > 0
-
-    def create_tool(self, name: str, description: str, tool_code: str = None, import_from: Optional[str] = None):
-        """创建新工具，如果工具已存在则更新并返回
-        
-        Args:
-            name: 工具名称
-            description: 工具描述
-            tool_code: 工具代码
-            import_from: 函数导入路径，例如 'module.submodule'
-        """
-        with self.driver.session(database=self.database) as session:
-            # 创建新的嵌入向量
-            embedding = self.embedder.embed_query(f"{name} {description}")
-            
-            # 使用MERGE来处理工具节点，防止重复创建
-            result = session.run("""
-                MERGE (tool:Tool {name: $name})
-                ON CREATE SET 
-                    tool.description = $description,
-                    tool.tool_code = $tool_code,
-                    tool.import_from = $import_from,
-                    tool.embedding = $embedding
-                ON MATCH SET 
-                    tool.description = $description,
-                    tool.tool_code = $tool_code,
-                    tool.import_from = $import_from,
-                    tool.embedding = $embedding
-                RETURN tool
-                LIMIT 1
-                """,
-                name=name,
-                description=description,
-                tool_code=tool_code,
-                import_from=import_from,
-                embedding=embedding
-            )
-            
-            record = result.single()
-            return record["tool"] if record else None
 
     def search_workflows(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工作流"""
@@ -486,7 +636,8 @@ class WorkflowManager:
             code = f"""
 # 导入装饰器
 import sys
-sys.path.append('.')
+
+sys.path.append(".")
 from Tools.code_executor import with_context
 
 # 定义上下文
@@ -494,11 +645,9 @@ context = {context_variables}
 
 {tool['tool_code']}
 
-# 装饰函数
-{tool['name']} = with_context({tool['name']})
-
-# 返回结果
-{tool['name']}(context)
+# 装饰函数并执行
+result = with_context({tool['name']})(context)
+result  # 返回结果
 """
             
             # 执行代码
@@ -508,28 +657,40 @@ context = {context_variables}
                 show_code=True
             )
             
+            # 检查是否有错误输出
+            if isinstance(output, str) and ("Error:" in output or "Exception:" in output):
+                return {
+                    "success": False,
+                    "error": output,
+                    "task": task["name"],
+                    "context": context_variables
+                }
+            
             try:
-                # 尝试解析输出
-                if isinstance(output, dict):
-                    result = output
-                else:
-                    result = eval(output)
-                
-                if result is None:
+                # 解析输出
+                if output is None:
                     result = {}
-                elif not isinstance(result, dict):
-                    result = {f"{task['name']}_result": result}
+                else:
+                    # 尝试解析输出为Python对象
+                    result = eval(output)
                     
+                    # 如果结果不是字典，使用工具名作为键
+                    if not isinstance(result, dict):
+                        result = {tool['name']: result}
+                
+                # 更新上下文
                 context_variables.update(result)
                 
                 return {
                     "success": True,
                     "context": context_variables
                 }
+                
             except Exception as e:
                 return {
                     "success": False,
                     "error": f"Failed to parse output: {str(e)}",
+                    "raw_output": output,
                     "task": task["name"],
                     "context": context_variables
                 }
@@ -640,3 +801,5 @@ context = {context_variables}
             self.driver.close()
         if hasattr(self, 'code_executor'):
             await self.code_executor.cleanup()
+
+

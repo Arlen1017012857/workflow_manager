@@ -35,7 +35,10 @@ def with_context(func):
         # Extract parameters from context
         kwargs = {}
         for param_name in params:
-            kwargs[param_name] = context.get(param_name)
+            if param_name in context:
+                kwargs[param_name] = context[param_name]
+            else:
+                raise ValueError(f"Required parameter '{param_name}' not found in context")
         
         # Call the original function
         result = func(**kwargs)
@@ -49,7 +52,7 @@ def with_context(func):
             return result
             
         # Otherwise, store the result with function name as key
-        return {f'{func.__name__}_result': result}
+        return {func.__name__: result}
     
     return wrapper
     
@@ -167,6 +170,8 @@ class CodeExecutor:
         msg_id = kc.execute(code)
         
         output = []
+        error = None
+        
         try:
             while True:
                 try:
@@ -185,37 +190,38 @@ class CodeExecutor:
                             if show_code:
                                 self.print_kernel_info(kernel_id, f"Output: {content.strip()}")
                         elif msg['msg_type'] == 'execute_result':
-                            content = str(msg['content']['data'].get('text/plain', ''))
+                            content = msg['content']['data'].get('text/plain', '')
                             output.append(content)
                             if show_code:
                                 self.print_kernel_info(kernel_id, f"Result: {content.strip()}")
                         elif msg['msg_type'] == 'error':
-                            error_msg = f"Error: {msg['content']['ename']} - {msg['content']['evalue']}"
-                            output.append(error_msg)
+                            error = f"{msg['content']['ename']}: {msg['content']['evalue']}"
                             if show_code:
-                                self.print_kernel_info(kernel_id, error_msg)
+                                self.print_kernel_info(kernel_id, f"Error: {error}")
                         elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
                             break
                 except asyncio.TimeoutError:
-                    msg = f"Execution timed out after {timeout} seconds"
-                    output.append(msg)
-                    if show_code:
-                        self.print_kernel_info(kernel_id, msg)
+                    error = "Execution timed out"
                     break
                 except Empty:
                     continue
-                except Exception as e:
-                    msg = f"Error during execution: {str(e)}"
-                    output.append(msg)
-                    if show_code:
-                        self.print_kernel_info(kernel_id, msg)
-                    break
-        finally:
-            execution_time = time.time() - start_time
-            if show_code:
-                self.print_kernel_info(kernel_id, f"Completed in {execution_time:.2f}s")
+                
+        except Exception as e:
+            error = str(e)
             
-        return ''.join(output), execution_time, kernel_id
+        execution_time = time.time() - start_time
+        
+        if error:
+            return error, execution_time, kernel_id
+            
+        # Get the last non-empty output
+        result = None
+        for item in reversed(output):
+            if item and not item.isspace():
+                result = item
+                break
+                
+        return result, execution_time, kernel_id
 
     def format_code(self, code):
         try:

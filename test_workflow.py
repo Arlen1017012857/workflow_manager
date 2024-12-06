@@ -24,8 +24,8 @@ async def test_workflow_execution():
         manager.create_tool(
             name="multiply_inline",
             description="Multiply result by 2 using inline code",
-            tool_code="""def multiply_inline(add_inline_result):
-    return add_inline_result * 2"""
+            tool_code="""def multiply_inline(add_inline):
+    return add_inline * 2"""
         )
         
         # Create tools using import execution from Tools directory
