@@ -156,6 +156,7 @@ class WorkflowManager:
             tool = session.run("""
                 MATCH (tool:Tool {name: $tool_name})
                 RETURN tool
+                LIMIT 1
                 """,
                 tool_name=tool_name
             ).single()
@@ -181,6 +182,7 @@ class WorkflowManager:
                 MERGE (task)-[:USES]->(tool)
                 
                 RETURN task
+                LIMIT 1
                 """,
                 name=name,
                 description=description,
@@ -188,7 +190,8 @@ class WorkflowManager:
                 embedding=embedding
             )
             
-            return result.single()["task"]
+            record = result.single()
+            return record["task"] if record else None
 
     def get_task(self, task_name: str) -> Dict:
         """获取任务详情"""
@@ -196,6 +199,7 @@ class WorkflowManager:
             result = session.run("""
                 MATCH (task:Task {name: $task_name})-[:USES]->(tool:Tool)
                 RETURN task, tool
+                LIMIT 1
                 """,
                 task_name=task_name
             )
@@ -246,10 +250,10 @@ class WorkflowManager:
             for task in tasks:
                 task_exists = session.run("""
                     MATCH (t:Task {name: $task_name})
-                    RETURN t
+                    RETURN count(t) > 0 as exists
                     """,
                     task_name=task["name"]
-                ).single()
+                ).single()["exists"]
                 
                 if not task_exists:
                     missing_tasks.append(task["name"])
@@ -284,6 +288,7 @@ class WorkflowManager:
                 // 返回工作流
                 WITH w
                 RETURN w
+                LIMIT 1
                 """,
                 name=name,
                 description=description,
@@ -291,7 +296,8 @@ class WorkflowManager:
                 tasks=tasks
             )
             
-            return result.single()["w"]
+            record = result.single()
+            return record["w"] if record else None
 
     def add_task_to_workflow(self, workflow_name: str, task_name: str, order: int) -> bool:
         """将任务添加到工作流"""
@@ -310,13 +316,13 @@ class WorkflowManager:
             result = session.run("""
                 MATCH (w:Workflow {name: $workflow_name}), (t:Task {name: $task_name})
                 CREATE (w)-[r:CONTAINS {order: $order}]->(t)
-                RETURN r
+                RETURN count(r) as created
                 """,
                 workflow_name=workflow_name,
                 task_name=task_name,
                 order=order
             )
-            return result.single() is not None
+            return result.single()["created"] > 0
 
     def remove_task_from_workflow(self, workflow_name: str, task_name: str) -> bool:
         """从工作流中移除任务"""
@@ -362,6 +368,7 @@ class WorkflowManager:
                     tool.import_from = $import_from,
                     tool.embedding = $embedding
                 RETURN tool
+                LIMIT 1
                 """,
                 name=name,
                 description=description,
@@ -370,7 +377,8 @@ class WorkflowManager:
                 embedding=embedding
             )
             
-            return result.single()["tool"]
+            record = result.single()
+            return record["tool"] if record else None
 
     def search_workflows(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工作流"""

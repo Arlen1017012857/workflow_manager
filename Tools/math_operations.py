@@ -14,12 +14,3 @@ def multiply_by_two(add_numbers_result):
 def format_result(multiply_by_two_result):
     """Format the result as a string"""
     return {'formatted': f"The final result is: {multiply_by_two_result}"}
-
-
-if __name__ == "__main__":
-    context = {
-        'a': 1,
-        'b': 2
-    }
-    result = add_numbers(context)
-    print(result)
