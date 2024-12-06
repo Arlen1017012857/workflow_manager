@@ -1,12 +1,21 @@
 import os
 from typing import Dict, List, Optional, Union, Any
 from neo4j import GraphDatabase
-from openai import OpenAIEmbeddings
-import numpy as np
+import neo4j
+from neo4j_graphrag.embeddings.openai import OpenAIEmbeddings
+from neo4j_graphrag.retrievers import HybridCypherRetriever
 
 class WorkflowManager:
-    def __init__(self, uri: str, user: str, password: str, database: str = "neo4j"):
+    def __init__(self, uri: str = None, user: str = None, password: str = None, database: str = "neo4j"):
         """初始化工作流管理器"""
+        # 从环境变量获取配置
+        uri = uri or os.getenv("NEO4J_URI", "neo4j://localhost:7687")
+        user = user or os.getenv("NEO4J_USER", "neo4j")
+        password = password or os.getenv("NEO4J_PASSWORD")
+        
+        if not password:
+            raise ValueError("Neo4j password must be provided either through constructor or NEO4J_PASSWORD environment variable")
+            
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.database = database
         self.embedder = OpenAIEmbeddings(
@@ -14,6 +23,77 @@ class WorkflowManager:
             api_key=os.getenv("EMBEDDER_API_KEY", "ollama"),
             model=os.getenv("EMBEDDER_MODEL", "nomic-embed-text:v1.5")
         )
+        
+        # 初始化检索器
+        self.workflow_retriever = HybridCypherRetriever(
+            driver=self.driver,
+            vector_index_name="workflowEmbedding",
+            fulltext_index_name="workflowFulltext",
+            embedder=self.embedder,
+            retrieval_query="""
+            MATCH (node)
+            WHERE node:Workflow
+            OPTIONAL MATCH (node)-[r:CONTAINS]->(task:Task)-[:USES]->(tool:Tool)
+            WITH node, task, tool, r.order as task_order, score
+            ORDER BY node.name, task_order
+            RETURN 
+                node.name as workflow_name,
+                node.description as workflow_description,
+                score as similarity_score,
+                collect({
+                    name: task.name,
+                    description: task.description,
+                    order: task_order,
+                    tool: tool.name
+                }) as tasks
+            """,
+            neo4j_database=database
+        )
+        
+        self.task_retriever = HybridCypherRetriever(
+            driver=self.driver,
+            vector_index_name="taskEmbedding",
+            fulltext_index_name="taskFulltext",
+            embedder=self.embedder,
+            retrieval_query="""
+            MATCH (node)
+            WHERE node:Task
+            OPTIONAL MATCH (node)-[:USES]->(tool:Tool)
+            OPTIONAL MATCH (workflow:Workflow)-[r:CONTAINS]->(node)
+            WITH node, tool, workflow, r.order as task_order, score
+            RETURN 
+                node.name as task_name,
+                node.description as task_description,
+                score as similarity_score,
+                tool.name as tool_name,
+                collect({
+                    name: workflow.name,
+                    order: task_order
+                }) as workflows
+            """,
+            neo4j_database=database
+        )
+        
+        self.tool_retriever = HybridCypherRetriever(
+            driver=self.driver,
+            vector_index_name="toolEmbedding",
+            fulltext_index_name="toolFulltext",
+            embedder=self.embedder,
+            retrieval_query="""
+            MATCH (node)
+            WHERE node:Tool
+            OPTIONAL MATCH (task:Task)-[:USES]->(node)
+            WITH node, collect(task.name) as used_by_tasks, score
+            RETURN 
+                node.name as tool_name,
+                node.description as tool_description,
+                node.function as tool_function,
+                score as similarity_score,
+                used_by_tasks
+            """,
+            neo4j_database=database
+        )
+        
         self._init_indexes()
 
     def _init_indexes(self):
@@ -64,7 +144,8 @@ class WorkflowManager:
         with self.driver.session(database=self.database) as session:
             # 首先检查任务是否已存在
             existing_task = session.run("""
-                MATCH (task:Task {name: $name})-[:USES]->(tool:Tool)
+                MATCH (task:Task {name: $name})
+                OPTIONAL MATCH (task)-[r:USES]->(tool:Tool)
                 RETURN task, tool
                 """,
                 name=name
@@ -159,7 +240,8 @@ class WorkflowManager:
             if existing_workflow:
                 return existing_workflow["w"]
             
-            # 检查所有任务是否存在
+            # 检查所有任务是否存在，并收集不存在的任务
+            missing_tasks = []
             for task in tasks:
                 task_exists = session.run("""
                     MATCH (t:Task {name: $task_name})
@@ -169,7 +251,11 @@ class WorkflowManager:
                 ).single()
                 
                 if not task_exists:
-                    raise ValueError(f"Task '{task['name']}' does not exist")
+                    missing_tasks.append(task["name"])
+            
+            # 如果有任务不存在，抛出异常并列出所有缺失的任务
+            if missing_tasks:
+                raise ValueError(f"Cannot create workflow '{name}'. The following tasks do not exist: {', '.join(missing_tasks)}")
             
             # 创建新工作流
             embedding = self.embedder.embed_query(f"{name} {description}")
@@ -272,73 +358,15 @@ class WorkflowManager:
 
     def search_workflows(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工作流"""
-        with self.driver.session(database=self.database) as session:
-            embedding = self.embedder.embed_query(query)
-            result = session.run("""
-                CALL db.index.vector.queryNodes('workflowEmbedding', $top_k, $embedding)
-                YIELD node, score
-                MATCH (node)-[r:CONTAINS]->(task:Task)-[:USES]->(tool:Tool)
-                WITH node, score, task, tool, r.order as task_order
-                ORDER BY node.name, task_order
-                RETURN 
-                    node.name as workflow_name,
-                    node.description as workflow_description,
-                    score as similarity_score,
-                    collect({
-                        name: task.name,
-                        description: task.description,
-                        order: task_order,
-                        tool: tool.name
-                    }) as tasks
-                """,
-                embedding=embedding,
-                top_k=top_k
-            )
-            return [dict(record) for record in result]
+        return self.workflow_retriever.search(query_text=query, top_k=top_k)
 
     def search_tasks(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索任务"""
-        with self.driver.session(database=self.database) as session:
-            embedding = self.embedder.embed_query(query)
-            result = session.run("""
-                CALL db.index.vector.queryNodes('taskEmbedding', $top_k, $embedding)
-                YIELD node, score
-                MATCH (node)-[:USES]->(tool:Tool)
-                OPTIONAL MATCH (workflow:Workflow)-[r:CONTAINS]->(node)
-                RETURN 
-                    node.name as task_name,
-                    node.description as task_description,
-                    score as similarity_score,
-                    tool.name as tool_name,
-                    collect({
-                        name: workflow.name,
-                        order: r.order
-                    }) as workflows
-                """,
-                embedding=embedding,
-                top_k=top_k
-            )
-            return [dict(record) for record in result]
+        return self.task_retriever.search(query_text=query, top_k=top_k)
 
     def search_tools(self, query: str, top_k: int = 5) -> List[Dict]:
         """使用混合检索搜索工具"""
-        with self.driver.session(database=self.database) as session:
-            embedding = self.embedder.embed_query(query)
-            result = session.run("""
-                CALL db.index.vector.queryNodes('toolEmbedding', $top_k, $embedding)
-                YIELD node, score
-                OPTIONAL MATCH (task:Task)-[:USES]->(node)
-                RETURN 
-                    node.name as tool_name,
-                    node.description as tool_description,
-                    node.function as tool_function,
-                    score as similarity_score,
-                    collect(task.name) as used_by_tasks
-                """,
-                embedding=embedding,
-                top_k=top_k
-            )
-            return [dict(record) for record in result]
+        return self.tool_retriever.search(query_text=query, top_k=top_k)
 
     def execute_workflow(self, workflow_name: str, context_variables: Dict[str, Any] = None) -> Dict[str, Any]:
         """执行工作流"""
@@ -385,9 +413,9 @@ class WorkflowManager:
 
 if __name__ == "__main__":
     manager = WorkflowManager(
-        uri="neo4j://localhost:7687",
-        user="neo4j",
-        password="password"
+        uri=os.getenv("NEO4J_URI", "neo4j://localhost:7687"),
+        user=os.getenv("NEO4J_USER", "neo4j"),
+        password=os.getenv("NEO4J_PASSWORD")
     )
 
     # 创建任务
