@@ -4,6 +4,7 @@ from neo4j import GraphDatabase
 import neo4j
 from neo4j_graphrag.embeddings.openai import OpenAIEmbeddings
 from neo4j_graphrag.retrievers import HybridCypherRetriever
+from Tools.code_executor import CodeExecutor
 
 class WorkflowManager:
     def __init__(self, uri: str = None, user: str = None, password: str = None, database: str = "neo4j"):
@@ -23,6 +24,9 @@ class WorkflowManager:
             api_key=os.getenv("EMBEDDER_API_KEY", "ollama"),
             model=os.getenv("EMBEDDER_MODEL", "nomic-embed-text:v1.5")
         )
+        
+        # 初始化代码执行器
+        self.code_executor = CodeExecutor(max_kernels=3)
         
         # 初始化检索器
         self.workflow_retriever = HybridCypherRetriever(
@@ -324,20 +328,24 @@ class WorkflowManager:
             )
             return result.single()["removed"] > 0
 
-    def create_tool(self, name: str, description: str, function: str) -> Dict:
-        """创建新工具，如果工具已存在则返回现有工具"""
+    def create_tool(self, name: str, description: str, function: str, import_from: Optional[str] = None):
+        """创建新工具，如果工具已存在则返回现有工具
+        
+        Args:
+            name: 工具名称
+            description: 工具描述
+            function: 函数名称
+            import_from: 函数导入路径，例如 'module.submodule'
+        """
         with self.driver.session(database=self.database) as session:
             # 检查工具是否已存在
-            existing_tool = session.run("""
-                MATCH (tool:Tool {name: $name})
-                RETURN tool
-                """,
+            result = session.run(
+                "MATCH (tool:Tool {name: $name}) RETURN tool",
                 name=name
-            ).single()
-            
-            if existing_tool:
-                return existing_tool["tool"]
-            
+            )
+            if result.peek():
+                return result.single()["tool"]
+
             # 创建新工具
             embedding = self.embedder.embed_query(f"{name} {description}")
             result = session.run("""
@@ -345,6 +353,7 @@ class WorkflowManager:
                     name: $name,
                     description: $description,
                     function: $function,
+                    import_from: $import_from,
                     embedding: $embedding
                 })
                 RETURN tool
@@ -352,6 +361,7 @@ class WorkflowManager:
                 name=name,
                 description=description,
                 function=function,
+                import_from=import_from,
                 embedding=embedding
             )
             return result.single()["tool"]
@@ -444,8 +454,114 @@ class WorkflowManager:
         
         return parsed_results
 
-    def execute_workflow(self, workflow_name: str, context_variables: Dict[str, Any] = None) -> Dict[str, Any]:
-        """执行工作流"""
+    async def execute_task_by_code(self, task: Dict, tool: Dict, context_variables: Dict[str, Any]) -> Dict[str, Any]:
+        """使用代码执行方式执行任务"""
+        try:
+            # 先执行代码定义
+            code_def, exec_time, kernel_id = await self.code_executor.execute_code(
+                tool["function"],
+                auto_format=True,
+                timeout=30,
+                show_code=True
+            )
+            
+            # 构建执行代码
+            exec_code = f"""
+context = {context_variables}
+result = {code_def}(context)
+result
+"""
+            # 使用同一个kernel执行代码
+            output, exec_time, _ = await self.code_executor.execute_code(
+                exec_code,
+                kernel_id=kernel_id,
+                auto_format=False,
+                show_code=False
+            )
+            
+            try:
+                context_variables.update(eval(output) if output else {})
+            except:
+                context_variables['output'] = output
+            
+            return {
+                "success": True,
+                "context": context_variables,
+                "execution_time": exec_time,
+                "kernel_id": kernel_id
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing task {task['name']}: {str(e)}",
+                "context": context_variables
+            }
+
+    async def execute_task_by_import(self, task: Dict, tool: Dict, context_variables: Dict[str, Any]) -> Dict[str, Any]:
+        """使用动态导入方式执行任务"""
+        try:
+            if not tool.get("import_from"):
+                raise ValueError(f"Tool {tool['name']} does not have import_from attribute")
+            
+            # 构建导入和执行代码
+            code = f"""
+try:
+    from {tool['import_from']} import {tool['function']}
+    context = {context_variables}
+    result = {tool['function']}(context)
+    result
+except Exception as e:
+    {{'error': str(e)}}
+"""
+            
+            output, exec_time, kernel_id = await self.code_executor.execute_code(
+                code,
+                auto_format=True,
+                timeout=30,
+                show_code=True
+            )
+            
+            try:
+                result = eval(output) if output else {}
+                if 'error' in result:
+                    raise Exception(result['error'])
+                context_variables.update(result)
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "task": task["name"],
+                    "context": context_variables
+                }
+            
+            return {
+                "success": True,
+                "context": context_variables,
+                "execution_time": exec_time,
+                "kernel_id": kernel_id
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "task": task["name"],
+                "context": context_variables
+            }
+
+    async def execute_workflow(self, workflow_name: str, context_variables: Dict[str, Any] = None) -> Dict[str, Any]:
+        """执行工作流
+        
+        根据工具的function属性是否为空来选择执行方式：
+        - function不为空：使用代码执行方式
+        - function为空：使用动态导入方式
+        
+        Args:
+            workflow_name: 工作流名称
+            context_variables: 上下文变量
+            
+        Returns:
+            Dict[str, Any]: 执行结果和上下文变量
+        """
         if context_variables is None:
             context_variables = {}
             
@@ -461,66 +577,33 @@ class WorkflowManager:
             
             tasks = [(record["task"], record["tool"], record["order"]) for record in result]
             
+            # 显示内核统计信息
+            self.code_executor.print_kernel_stats()
+            
             # 按顺序执行每个任务
             for task, tool, order in tasks:
-                try:
-                    # 获取工具函数
-                    tool_function = eval(tool["function"])
-                    # 执行工具函数，传入上下文变量
-                    result = tool_function(context_variables)
-                    # 更新上下文变量
-                    context_variables.update(result)
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "error": f"Error executing task {task['name']}: {str(e)}",
-                        "context": context_variables
-                    }
+                # 根据function属性选择执行方式
+                if tool.get("function") and tool["function"].strip():
+                    result = await self.execute_task_by_code(task, tool, context_variables)
+                else:
+                    result = await self.execute_task_by_import(task, tool, context_variables)
+                
+                # 检查执行结果
+                if not result["success"]:
+                    return result
+                
+                # 更新上下文变量
+                context_variables = result["context"]
+                
+                # 显示内核统计信息
+                self.code_executor.print_kernel_stats()
             
             return {
                 "success": True,
                 "context": context_variables
             }
 
-    def close(self):
-        """关闭数据库连接"""
+    async def close(self):
+        """关闭数据库连接和清理资源"""
         self.driver.close()
-
-
-if __name__ == "__main__":
-    manager = WorkflowManager(
-        uri=os.getenv("NEO4J_URI", "neo4j://localhost:7687"),
-        user=os.getenv("NEO4J_USER", "neo4j"),
-        password=os.getenv("NEO4J_PASSWORD")
-    )
-
-    # 创建任务
-    task = manager.create_task(
-        name="数据预处理",
-        description="清洗和准备数据",
-        tool_name="data_preprocessor"
-    )
-
-    # 创建工具
-    tool = manager.create_tool(
-        name="data_preprocessor",
-        description="数据预处理工具",
-        function="lambda x: {'output': x['input']}"
-    )
-
-    # 创建工作流
-    workflow = manager.create_workflow(
-        name="数据分析流程",
-        description="完整的数据分析流程",
-        tasks=[
-            {"name": "数据预处理", "order": 1},
-            {"name": "特征工程", "order": 2},
-            {"name": "模型训练", "order": 3}
-        ]
-    )
-
-    # 执行工作流
-    result = manager.execute_workflow(
-        workflow_name="数据分析流程",
-        context_variables={"input_data": "path/to/data.csv"}
-    )
+        await self.code_executor.cleanup()
